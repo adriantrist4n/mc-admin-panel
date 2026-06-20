@@ -9,6 +9,18 @@ Pensado para **vanilla, Paper, Purpur, Spigot o Fabric**: se instala dentro de
 la carpeta raíz de tu servidor (donde está el `.jar` y `server.properties`) y
 se adapta solo.
 
+## Capturas
+
+**Dashboard en vivo**
+
+![Dashboard en vivo](screenshots/dashboard.png)
+
+**Menú de control**
+
+![Menú de control](screenshots/menu.png)
+
+*(jugadores y actividad de ejemplo, para mostrar esas secciones con datos)*
+
 ## Requisitos
 
 - Linux (usa `/proc` para detectar procesos; no funciona en macOS/Windows).

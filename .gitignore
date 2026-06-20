@@ -23,3 +23,6 @@
 !tests/
 !tests/*.sh
 !tests/*.py
+
+!screenshots/
+!screenshots/*.png
