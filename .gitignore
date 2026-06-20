@@ -1,0 +1,21 @@
+# Este repositorio es el toolkit de administración (mc-admin-panel), no los
+# datos de un servidor concreto. Por eso se ignora TODO por defecto y solo se
+# permiten explícitamente los archivos del propio toolkit: así, sin importar
+# cómo se llame tu mundo, tus mods o tu jar, nunca acaban en el repo por
+# accidente (y tampoco server.properties / .rcon.env, que llevan secretos).
+*
+
+!.gitignore
+!README.md
+!LICENSE
+
+!admin.sh
+!start.sh
+!backup.sh
+!install-service.sh
+!lib.sh
+!config.sh
+!dashboard.py
+!idle-monitor.py
+!mcconfig.py
+!rcon.py
