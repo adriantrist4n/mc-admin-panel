@@ -19,3 +19,7 @@
 !idle-monitor.py
 !mcconfig.py
 !rcon.py
+
+!tests/
+!tests/*.sh
+!tests/*.py

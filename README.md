@@ -89,6 +89,17 @@ desactiva mobs/clima/random ticks para consumir menos CPU, y lo restaura en
 cuanto entra alguien. Se puede desactivar con `IDLE_ENABLED=false` en
 `config.sh`. Necesita RCON.
 
+## Tests
+
+```
+./tests/run_tests.sh
+```
+
+Corre la suite completa (funciones de `lib.sh` y de los módulos Python).
+Todo se prueba contra directorios temporales y, cuando hace falta un proceso
+`java` o un servidor RCON, se levanta uno falso/sintético — no toca tu
+servidor real ni necesita que esté arrancado.
+
 ## Limitaciones conocidas
 
 - Pensado para servidores de un solo `.jar` lanzado con
