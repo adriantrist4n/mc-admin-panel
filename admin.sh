@@ -46,6 +46,12 @@ VENV_PY="$VENV_DIR/bin/python"
 DASHBOARD="$DIR/dashboard.py"
 DASHBOARD_OK=0
 
+# Intérprete para el núcleo Python (mcadmin.py): el del venv si existe (lleva
+# psutil), si no el del sistema.
+mc_py() {
+    if [ -x "$VENV_PY" ]; then echo "$VENV_PY"; else echo "python3"; fi
+}
+
 # server_running: comprueba el PID file namespaced; si no existe, intenta
 # adoptar un proceso java ya en marcha en este mismo directorio (por cwd) en
 # vez de asumir que está parado — evita lanzar una segunda instancia tras
@@ -94,45 +100,11 @@ launch_dashboard() {
     return $?
 }
 
-# Lógica de arranque sin UI (texto plano). Códigos: 0 ok · 1 error · 2 ya en marcha
+# Lógica de arranque/parada/reinicio sin UI: delega en el núcleo
+# multiplataforma (mcadmin.py) para no duplicar la lógica con Windows.
+# Códigos: 0 ok · 1 error · 2 no-op (ya en marcha / no estaba en marcha).
 _do_start() {
-    if server_running; then
-        echo "El servidor ya está en ejecución (PID $(cat "$SERVER_PID_FILE"))."
-        return 2
-    fi
-
-    local launch_cmd
-    launch_cmd=$(mc_resolve_launch_cmd "$DIR")
-    if [ -z "$launch_cmd" ]; then
-        echo "No se pudo determinar cómo arrancar el servidor. Define SERVER_JAR o SERVER_START_CMD en config.sh."
-        return 1
-    fi
-
-    echo "Arrancando servidor Minecraft..."
-    nohup $launch_cmd > "$CONSOLE_LOG" 2>&1 &
-    local pid=$!
-    echo $pid > "$SERVER_PID_FILE"
-
-    # Puerto que indica "listo": el de RCON si está habilitado, si no el de juego.
-    local check_port="$RCON_PORT"
-    [ "$RCON_ENABLED" != "true" ] && check_port=$(read_prop "$DIR/server.properties" "server-port" "25565")
-
-    local timeout=60
-    while [ $timeout -gt 0 ]; do
-        sleep 2
-        if ss -tlnp 2>/dev/null | grep -q ":$check_port" || netstat -tlnp 2>/dev/null | grep -q ":$check_port"; then
-            sleep 2
-            if [ "$RCON_ENABLED" = "true" ] && [ "$IDLE_ENABLED" = "true" ]; then
-                nohup python3 "$DIR/idle-monitor.py" > /dev/null 2>&1 &
-                echo $! > "$IDLE_PID_FILE"
-            fi
-            echo "Servidor iniciado correctamente (PID $pid)."
-            return 0
-        fi
-        timeout=$((timeout - 2))
-    done
-    echo "El servidor no respondió en 60s. Revisa $CONSOLE_LOG"
-    return 1
+    "$(mc_py)" "$DIR/mcadmin.py" --do-start
 }
 
 # Wrapper whiptail (fallback sin rich)
@@ -149,43 +121,12 @@ start_server() {
     fi
 }
 
-# Lógica de parada sin UI (texto plano). Códigos: 0 ok · 2 no estaba en marcha
 _do_stop() {
-    if ! server_running; then
-        echo "El servidor no está en ejecución."
-        return 2
-    fi
-    echo "Enviando comando 'stop' al servidor..."
-    if [ "$RCON_ENABLED" = "true" ]; then
-        rcon_cmd "say §cEl servidor se detendrá en 5 segundos..."
-        sleep 2
-        rcon_cmd "stop"
-        sleep 5
-    fi
-    if server_running; then
-        local pid
-        pid=$(cat "$SERVER_PID_FILE")
-        kill "$pid" 2>/dev/null
-        sleep 2
-        kill -9 "$pid" 2>/dev/null
-    fi
-    rm -f "$SERVER_PID_FILE"
-    if [ -f "$IDLE_PID_FILE" ]; then
-        kill "$(cat "$IDLE_PID_FILE")" 2>/dev/null
-        rm -f "$IDLE_PID_FILE"
-    fi
-    echo "Servidor detenido."
-    return 0
+    "$(mc_py)" "$DIR/mcadmin.py" --do-stop
 }
 
-# Reinicio sin UI
 _do_restart() {
-    if server_running && [ "$RCON_ENABLED" = "true" ]; then
-        rcon_cmd "say §cReiniciando servidor..."
-        sleep 1
-    fi
-    _do_stop
-    _do_start
+    "$(mc_py)" "$DIR/mcadmin.py" --do-restart
 }
 
 # Wrapper whiptail (fallback sin rich)

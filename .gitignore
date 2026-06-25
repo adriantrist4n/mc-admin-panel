@@ -18,11 +18,18 @@
 !dashboard.py
 !idle-monitor.py
 !mcconfig.py
+!mcadmin.py
 !rcon.py
+
+# Lanzadores para Windows
+!admin.bat
+!backup.bat
+!iniciar_windows.bat
 
 !tests/
 !tests/*.sh
 !tests/*.py
+!tests/*.bat
 
 !screenshots/
 !screenshots/*.png
