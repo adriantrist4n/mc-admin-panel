@@ -16,7 +16,7 @@ FAIL=0
 echo "########## lib.sh ##########"
 bash "$DIR/tests/test_lib.sh" || FAIL=1
 
-for t in test_mcconfig.py test_dashboard.py test_idle_monitor.py test_rcon.py; do
+for t in test_mcconfig.py test_mcadmin.py test_dashboard.py test_idle_monitor.py test_rcon.py; do
     echo
     echo "########## $t ##########"
     "$PY" "$DIR/tests/$t" -v || FAIL=1

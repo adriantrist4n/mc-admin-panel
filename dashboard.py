@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
 Dashboard de administración en vivo para un servidor Minecraft
-(vanilla/Paper/Purpur/Spigot/Fabric) en Linux.
+(vanilla/Paper/Purpur/Spigot/Fabric). Funciona en Linux y en Windows.
 
-Lo lanza admin.sh con el intérprete del venv (.venv-admin). Muestra en tiempo
-real CPU/RAM/heap de la JVM, GC, TPS/MSPT, jugadores, disco, etc., y aloja
-también el menú de control (comando RCON, consola, logs, backup, start/stop).
+Lo lanza admin.sh (Linux) o admin.bat (Windows) con el intérprete del venv
+(.venv-admin). Muestra en tiempo real CPU/RAM/heap de la JVM, GC, TPS/MSPT,
+jugadores, disco, etc., y aloja también el menú de control (comando RCON,
+consola, logs, backup, start/stop).
 
 Modo de prueba (sin UI, imprime un snapshot y sale):
     .venv-admin/bin/python dashboard.py --probe
@@ -17,12 +18,17 @@ import sys
 import time
 import json
 import shutil
-import select
-import termios
-import tty
 import threading
 import subprocess
 from collections import deque
+
+IS_WINDOWS = os.name == "nt"
+if IS_WINDOWS:
+    import msvcrt
+else:
+    import select
+    import termios
+    import tty
 
 import psutil
 
@@ -39,13 +45,13 @@ SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SERVER_DIR)
 import rcon as rcon_mod  # reutiliza la lógica RCON probada (rcon.py)
 import mcconfig
+import mcadmin  # ciclo de vida + backup multiplataforma (start/stop/restart)
 
 RUNTIME_DIR = mcconfig.runtime_dir(SERVER_DIR)
 PID_FILE = os.path.join(RUNTIME_DIR, "server.pid")
 CONSOLE_LOG = os.path.join(RUNTIME_DIR, "console.log")
 IDLE_PID_FILE = os.path.join(RUNTIME_DIR, "idle-monitor.pid")
 WORLD_DIR = mcconfig.world_dir(SERVER_DIR)
-ADMIN_SH = os.path.join(SERVER_DIR, "admin.sh")
 
 NCPU = psutil.cpu_count() or 1
 SPARKS = "▁▂▃▄▅▆▇█"
@@ -305,11 +311,17 @@ class Monitor(threading.Thread):
             return None
 
     def _world_size(self):
+        """Tamaño del mundo en bytes (recorrido puro en Python, multiplataforma)."""
+        total = 0
         try:
-            r = subprocess.run(["du", "-sb", WORLD_DIR], capture_output=True,
-                               text=True, timeout=25)
-            return int(r.stdout.split()[0])
-        except (subprocess.SubprocessError, OSError, ValueError, IndexError):
+            for root, _dirs, files in os.walk(WORLD_DIR):
+                for name in files:
+                    try:
+                        total += os.path.getsize(os.path.join(root, name))
+                    except OSError:
+                        pass
+            return total
+        except OSError:
             return None
 
     def _player_detail(self, names):
@@ -422,9 +434,10 @@ class Monitor(threading.Thread):
             # jar): un proceso java cuyo directorio de trabajo es este servidor.
             for p in psutil.process_iter(["name"]):
                 try:
-                    if p.info["name"] != "java":
+                    name = (p.info["name"] or "").lower()
+                    if not name.startswith("java"):  # java / java.exe / javaw.exe
                         continue
-                    if p.cwd() == SERVER_DIR:
+                    if os.path.abspath(p.cwd()) == os.path.abspath(SERVER_DIR):
                         pid = p.pid
                         break
                 except (psutil.Error, TypeError, OSError):
@@ -951,85 +964,119 @@ def make_layout(snap):
 
 
 # ================================================================== teclado
+# La API (setup_kb / restore_kb / read_key_token) es la misma en los dos SO;
+# read_key_token devuelve tokens: 'UP'/'DOWN'/'LEFT'/'RIGHT', 'ENTER', 'ESC',
+# 'CTRLC', 'BACKSPACE', un carácter, o None si no hubo tecla en el timeout.
 
-def setup_kb():
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    tty.setcbreak(fd)
-    return old
+if not IS_WINDOWS:
+    def setup_kb():
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        tty.setcbreak(fd)
+        return old
 
+    def restore_kb(old):
+        try:
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old)
+        except Exception:
+            pass
 
-def restore_kb(old):
-    try:
-        termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old)
-    except Exception:
+    # Buffer de bytes pendientes. Imprescindible leer del fd crudo con os.read (sin el
+    # buffer de sys.stdin): si no, una lectura se traga toda la secuencia de la flecha
+    # (\x1b[A) y el siguiente select no ve los bytes restantes -> se interpretaría ESC.
+    _key_buf = b""
+
+    def read_key_token(timeout):
+        global _key_buf
+        fd = sys.stdin.fileno()
+        if not _key_buf:
+            try:
+                r, _, _ = select.select([fd], [], [], timeout)
+            except (OSError, ValueError):
+                return None
+            if not r:
+                return None
+            try:
+                chunk = os.read(fd, 64)
+            except OSError:
+                return None
+            if not chunk:
+                return None
+            _key_buf = chunk
+
+        b = _key_buf
+        first = b[:1]
+        if first in (b"\r", b"\n"):
+            _key_buf = b[1:]
+            return "ENTER"
+        if first == b"\x03":
+            _key_buf = b[1:]
+            return "CTRLC"
+        if first == b"\x7f":
+            _key_buf = b[1:]
+            return "BACKSPACE"
+        if first == b"\x1b":
+            # secuencia de flecha: ESC [ <letra>  (o ESC O <letra> en modo aplicación)
+            if b[1:2] in (b"[", b"O") and len(b) >= 3:
+                code = b[2:3]
+                _key_buf = b[3:]
+                return {b"A": "UP", b"B": "DOWN", b"C": "RIGHT", b"D": "LEFT"}.get(code, "ESC")
+            if len(b) == 1:  # quizá venía partida (SSH lento): intenta completar
+                try:
+                    r2, _, _ = select.select([fd], [], [], 0.05)
+                    if r2:
+                        _key_buf += os.read(fd, 8)
+                        b = _key_buf
+                        if b[1:2] in (b"[", b"O") and len(b) >= 3:
+                            code = b[2:3]
+                            _key_buf = b[3:]
+                            return {b"A": "UP", b"B": "DOWN", b"C": "RIGHT", b"D": "LEFT"}.get(code, "ESC")
+                except OSError:
+                    pass
+            _key_buf = b[1:]
+            return "ESC"
+        _key_buf = b[1:]
+        try:
+            return first.decode("utf-8", "ignore") or None
+        except Exception:
+            return None
+
+else:
+    # Windows: msvcrt lee el teclado directamente; no hace falta poner la
+    # consola en modo cbreak/raw, así que setup/restore no tienen nada que hacer.
+    def setup_kb():
+        return None
+
+    def restore_kb(old):
         pass
 
+    _WIN_ARROWS = {"H": "UP", "P": "DOWN", "K": "LEFT", "M": "RIGHT"}
 
-# Buffer de bytes pendientes. Imprescindible leer del fd crudo con os.read (sin el
-# buffer de sys.stdin): si no, una lectura se traga toda la secuencia de la flecha
-# (\x1b[A) y el siguiente select no ve los bytes restantes -> se interpretaría ESC.
-_key_buf = b""
-
-
-def read_key_token(timeout):
-    """Lee una pulsación del teclado y devuelve un token.
-
-    'UP'/'DOWN'/'LEFT'/'RIGHT', 'ENTER', 'ESC', 'CTRLC', 'BACKSPACE', un carácter, o None.
-    """
-    global _key_buf
-    fd = sys.stdin.fileno()
-    if not _key_buf:
+    def read_key_token(timeout):
+        deadline = time.time() + (timeout or 0)
+        while not msvcrt.kbhit():
+            if time.time() >= deadline:
+                return None
+            time.sleep(0.01)
         try:
-            r, _, _ = select.select([fd], [], [], timeout)
-        except (OSError, ValueError):
-            return None
-        if not r:
-            return None
-        try:
-            chunk = os.read(fd, 64)
-        except OSError:
-            return None
-        if not chunk:
-            return None
-        _key_buf = chunk
-
-    b = _key_buf
-    first = b[:1]
-    if first in (b"\r", b"\n"):
-        _key_buf = b[1:]
-        return "ENTER"
-    if first == b"\x03":
-        _key_buf = b[1:]
-        return "CTRLC"
-    if first == b"\x7f":
-        _key_buf = b[1:]
-        return "BACKSPACE"
-    if first == b"\x1b":
-        # secuencia de flecha: ESC [ <letra>  (o ESC O <letra> en modo aplicación)
-        if b[1:2] in (b"[", b"O") and len(b) >= 3:
-            code = b[2:3]
-            _key_buf = b[3:]
-            return {b"A": "UP", b"B": "DOWN", b"C": "RIGHT", b"D": "LEFT"}.get(code, "ESC")
-        if len(b) == 1:  # quizá venía partida (SSH lento): intenta completar
+            ch = msvcrt.getwch()
+        except (KeyboardInterrupt, EOFError):
+            return "CTRLC"
+        if ch in ("\x00", "\xe0"):     # prefijo de tecla especial (flechas...)
             try:
-                r2, _, _ = select.select([fd], [], [], 0.05)
-                if r2:
-                    _key_buf += os.read(fd, 8)
-                    b = _key_buf
-                    if b[1:2] in (b"[", b"O") and len(b) >= 3:
-                        code = b[2:3]
-                        _key_buf = b[3:]
-                        return {b"A": "UP", b"B": "DOWN", b"C": "RIGHT", b"D": "LEFT"}.get(code, "ESC")
-            except OSError:
-                pass
-        _key_buf = b[1:]
-        return "ESC"
-    _key_buf = b[1:]
-    try:
-        return first.decode("utf-8", "ignore") or None
-    except Exception:
-        return None
+                code = msvcrt.getwch()
+            except (KeyboardInterrupt, EOFError):
+                return "CTRLC"
+            return _WIN_ARROWS.get(code)
+        if ch in ("\r", "\n"):
+            return "ENTER"
+        if ch == "\x03":
+            return "CTRLC"
+        if ch in ("\x08", "\x7f"):
+            return "BACKSPACE"
+        if ch == "\x1b":
+            return "ESC"
+        return ch or None
 
 
 # =============================================================== menú (rich)
@@ -1214,8 +1261,8 @@ def submenu_command(console, mon, kb_old):
         cmd = console.input("[bold cyan]» [/]").strip()
     except (EOFError, KeyboardInterrupt):
         cmd = ""
-    if sys.stdin.isatty():
-        tty.setcbreak(sys.stdin.fileno())        # volver a cbreak
+    if not IS_WINDOWS and sys.stdin.isatty():
+        tty.setcbreak(sys.stdin.fileno())        # volver a cbreak (en Windows no aplica)
     if not cmd:
         return
     result = mon.rcon(cmd)
@@ -1233,11 +1280,26 @@ def submenu_console(console, mon):
         pause_key()
         return
     console.clear()
-    console.print(Align.center(Text("⌨️  Consola en vivo — Ctrl-C para volver al menú\n",
+    console.print(Align.center(Text("⌨️  Consola en vivo — q / Esc / Ctrl-C para volver al menú\n",
                                     style="bold cyan")))
+    # Seguidor de fichero puro en Python (equivalente a 'tail -f'), multiplataforma.
     try:
-        subprocess.run(["tail", "-f", CONSOLE_LOG])
-    except (KeyboardInterrupt, OSError, subprocess.SubprocessError):
+        with open(CONSOLE_LOG, "r", errors="replace") as f:
+            tail = f.readlines()[-30:]
+            for line in tail:
+                sys.stdout.write(line)
+            sys.stdout.flush()
+            f.seek(0, os.SEEK_END)
+            while True:
+                line = f.readline()
+                if line:
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                    continue
+                key = read_key_token(0.3)   # actúa como pausa y como salida
+                if key in ("q", "Q", "ESC", "CTRLC"):
+                    break
+    except (KeyboardInterrupt, OSError):
         pass
 
 
@@ -1275,8 +1337,7 @@ def submenu_backup(console, mon):
     rc, err = 1, ""
     with console.status("[cyan]Creando backup del mundo…[/]", spinner="dots"):
         try:
-            rc = subprocess.run([os.path.join(SERVER_DIR, "backup.sh")],
-                                capture_output=True, timeout=600).returncode
+            rc, err = mcadmin.backup(SERVER_DIR)
         except Exception as exc:
             rc, err = 1, str(exc)
     if rc == 0:
@@ -1287,7 +1348,8 @@ def submenu_backup(console, mon):
             msg = "Backup completado."
         body = info_box(msg, "green", "💾 Backup")
     else:
-        body = info_box("El backup falló. Revisa backups/backup.log\n" + err, "red", "💾 Backup")
+        body = info_box((err or "El backup falló.") + "\nRevisa backups/backup.log",
+                        "red", "💾 Backup")
     screen_with(console, mon, body)
     pause_key()
 
@@ -1295,13 +1357,13 @@ def submenu_backup(console, mon):
 def lifecycle(console, mon, action):
     cfg = {
         "start":   ("🟢 Iniciar servidor", "¿Arrancar el servidor de Minecraft?",
-                    "--do-start", "Arrancando servidor…"),
+                    mcadmin.do_start, "Arrancando servidor…"),
         "stop":    ("🔴 Detener servidor", "¿Detener el servidor de forma segura?",
-                    "--do-stop", "Deteniendo servidor…"),
+                    mcadmin.do_stop, "Deteniendo servidor…"),
         "restart": ("🔄 Reiniciar servidor", "¿Reiniciar el servidor ahora?",
-                    "--do-restart", "Reiniciando servidor…"),
+                    mcadmin.do_restart, "Reiniciando servidor…"),
     }
-    title, question, arg, spin = cfg[action]
+    title, question, fn, spin = cfg[action]
     if not confirm_screen(console, mon, title, question, danger=(action != "start")):
         return
     console.clear()
@@ -1309,8 +1371,7 @@ def lifecycle(console, mon, action):
     rc, out = 1, ""
     with console.status(f"[cyan]{spin}[/]", spinner="dots"):
         try:
-            p = subprocess.run([ADMIN_SH, arg], capture_output=True, text=True, timeout=180)
-            rc, out = p.returncode, (p.stdout or "").strip()
+            rc, out = fn(SERVER_DIR)
         except Exception as exc:
             out = str(exc)
     color = "green" if rc == 0 else ("yellow" if rc == 2 else "red")
