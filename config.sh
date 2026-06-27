@@ -32,3 +32,7 @@ IDLE_CHECK_INTERVAL=30
 
 # Backups del mundo: cuántos se conservan antes de borrar los más antiguos.
 MAX_BACKUPS=14
+
+# Avisar por el chat del servidor (vía RCON) cuando empieza y termina un backup.
+# Ponlo en false para hacer los backups en silencio. Necesita RCON habilitado.
+BACKUP_ANNOUNCE=true

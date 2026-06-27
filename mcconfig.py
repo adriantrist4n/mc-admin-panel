@@ -94,6 +94,7 @@ _CONFIG_DEFAULTS = {
     "IDLE_TIMEOUT": "300",
     "IDLE_CHECK_INTERVAL": "30",
     "MAX_BACKUPS": "14",
+    "BACKUP_ANNOUNCE": "true",
 }
 
 _ASSIGN_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$")

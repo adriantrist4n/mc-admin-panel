@@ -130,6 +130,49 @@ class TestBackup(unittest.TestCase):
                                     "world-20240104_000000.tar.gz"])
 
 
+class TestBackupAnnounce(unittest.TestCase):
+    """El backup avisa por el chat (RCON 'say') si BACKUP_ANNOUNCE=true. Se
+    monkeypatchea _rcon para capturar los comandos sin servidor real."""
+
+    def _make_world(self, d, config=""):
+        write(os.path.join(d, "server.properties"),
+              "enable-rcon=true\nrcon.password=x\nlevel-name=world\n")
+        os.makedirs(os.path.join(d, "world"))
+        write(os.path.join(d, "world", "level.dat"), "datos")
+        if config:
+            write(os.path.join(d, "config.sh"), config)
+
+    def _backup_capturing(self, d):
+        calls = []
+        orig_rcon, orig_sleep = mcadmin._rcon, mcadmin.time.sleep
+        mcadmin._rcon = lambda sd, cmd: calls.append(cmd) or "ok"
+        mcadmin.time.sleep = lambda *a, **k: None  # tests rápidos
+        try:
+            rc, _ = mcadmin.backup(d)
+        finally:
+            mcadmin._rcon, mcadmin.time.sleep = orig_rcon, orig_sleep
+        return rc, calls
+
+    def test_announces_start_and_done(self):
+        with EnvRuntime() as d:
+            self._make_world(d)
+            rc, calls = self._backup_capturing(d)
+        self.assertEqual(rc, 0)
+        says = [c for c in calls if c.startswith("say ")]
+        self.assertEqual(len(says), 2)            # inicio + fin
+        self.assertIn("Backup", says[0])
+        self.assertIn("save-off", calls)          # el flujo de RCON sigue intacto
+        self.assertIn("save-on", calls)
+
+    def test_no_announce_when_disabled(self):
+        with EnvRuntime() as d:
+            self._make_world(d, config="BACKUP_ANNOUNCE=false\n")
+            rc, calls = self._backup_capturing(d)
+        self.assertEqual(rc, 0)
+        self.assertEqual([c for c in calls if c.startswith("say ")], [])
+        self.assertIn("save-off", calls)          # save-off/save-on siguen ocurriendo
+
+
 class EnvRuntime:
     """Directorio temporal con MC_ADMIN_RUNTIME_DIR apuntando dentro de él, para
     que los PID files no se mezclen con el runtime real de la máquina."""

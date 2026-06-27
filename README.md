@@ -169,6 +169,11 @@ carpeta se lee de `level-name` en `server.properties`, no se asume "world") a
 está disponible. Se conservan los `MAX_BACKUPS` más recientes (configurable en
 `config.sh`); también se puede lanzar desde el menú del panel.
 
+Si RCON está habilitado, el servidor **avisa por el chat** a los jugadores
+cuando empieza el backup y cuando termina (o si falla). Esto se aplica a todos
+los backups —manuales, desde el menú o programados—. Para hacerlos en silencio,
+pon `BACKUP_ANNOUNCE=false` en `config.sh`.
+
 ## Modo ahorro
 
 Si el servidor lleva varios minutos vacío (`IDLE_TIMEOUT` en `config.sh`, 5
