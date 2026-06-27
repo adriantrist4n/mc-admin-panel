@@ -38,6 +38,13 @@ IS_WINDOWS = os.name == "nt"
 JAR_CANDIDATES = ["fabric-server-launch.jar", "server.jar", "paper.jar",
                   "purpur.jar", "spigot.jar"]
 
+# Avisos que se mandan al chat del servidor (RCON 'say') alrededor del backup,
+# si BACKUP_ANNOUNCE=true en config.sh. Usan códigos de color § como el resto
+# del toolkit.
+BACKUP_MSG_START = "§e[Backup] Realizando copia de seguridad del mundo, puede haber un breve tirón…"
+BACKUP_MSG_DONE = "§a[Backup] Copia de seguridad completada."
+BACKUP_MSG_FAIL = "§c[Backup] La copia de seguridad falló."
+
 
 # ---------------------------------------------------------------- helpers
 
@@ -333,6 +340,11 @@ def backup(server_dir=SERVER_DIR):
 
     _backup_log(server_dir, "Iniciando backup...")
     _, _, _pw, rcon_enabled = mcconfig.rcon_creds(server_dir)
+    announce = (rcon_enabled
+               and cfg.get("BACKUP_ANNOUNCE", "true").strip().lower() == "true")
+    if announce:
+        _rcon(server_dir, f"say {BACKUP_MSG_START}")
+        time.sleep(1)  # deja que el aviso se lea antes de congelar el guardado
     if rcon_enabled:
         _rcon(server_dir, "save-off")
         _rcon(server_dir, "save-all")
@@ -357,12 +369,16 @@ def backup(server_dir=SERVER_DIR):
             os.remove(backup_file)
         except OSError:
             pass
+        if announce:
+            _rcon(server_dir, f"say {BACKUP_MSG_FAIL}")
         return 1, "El backup falló. Revisa backups/backup.log"
 
     size = os.path.getsize(backup_file)
     _backup_log(server_dir, f"Backup completado: {backup_file} ({size} bytes)")
     _prune_backups(server_dir, cfg)
     _backup_log(server_dir, "---")
+    if announce:
+        _rcon(server_dir, f"say {BACKUP_MSG_DONE}")
     return 0, f"Backup completado: {os.path.basename(backup_file)}"
 
 
